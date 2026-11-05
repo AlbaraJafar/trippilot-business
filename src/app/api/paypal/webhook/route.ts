@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { verifyWebhook } from "@/lib/payments/paypal";
+import { reconcilePaymentById } from "@/lib/services/payments";
 
 /**
  * PayPal webhook receiver. Events are acted upon only after the PayPal
@@ -38,12 +39,18 @@ export async function POST(req: Request) {
       payload: JSON.stringify({ id: evt.id, type: evt.event_type, status: evt.resource?.status }),
     },
   });
-  if (evt.event_type === "PAYMENT.CAPTURE.DENIED" || evt.event_type === "PAYMENT.CAPTURE.REVERSED") {
+  const captureOutcome = ["PAYMENT.CAPTURE.COMPLETED", "PAYMENT.CAPTURE.DENIED", "PAYMENT.CAPTURE.PENDING"].includes(evt.event_type);
+  if (captureOutcome && ["CAPTURE_PENDING", "CAPTURE_UNKNOWN", "CAPTURING"].includes(payment.status)) {
+    // Never trust the event body for money state: re-read the order from PayPal and verify it.
+    try {
+      await reconcilePaymentById(payment.id);
+    } catch {
+      return NextResponse.json({ error: "Reconciliation failed; PayPal will retry" }, { status: 503 });
+    }
+  } else if (evt.event_type === "PAYMENT.CAPTURE.REVERSED") {
     await prisma.payment.update({ where: { id: payment.id }, data: { status: "FAILED", errorMessage: `PayPal event ${evt.event_type}` } });
   } else if (evt.event_type === "PAYMENT.CAPTURE.REFUNDED" && payment.status !== "REFUNDED") {
     await prisma.payment.update({ where: { id: payment.id }, data: { status: "REFUNDED", refundedAt: new Date() } });
-  } else if (evt.event_type === "PAYMENT.CAPTURE.COMPLETED" && payment.status === "CAPTURE_PENDING") {
-    await prisma.payment.update({ where: { id: payment.id }, data: { status: "CAPTURED", capturedAt: new Date() } });
   }
   return NextResponse.json({ ok: true });
 }

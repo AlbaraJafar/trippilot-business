@@ -15,6 +15,7 @@ export default async function PaymentDetail({ params }: { params: Promise<{ id: 
     include: { request: { include: { bookings: true } }, consentBy: true, events: { orderBy: { createdAt: "asc" } } },
   });
   if (!p) notFound();
+  const needsAttention = ["NEEDS_REVIEW", "CAPTURE_UNKNOWN", "CAPTURING"].includes(p.status);
   const dt = (d: Date | null) => (d ? d.toLocaleString("en-GB", { timeZone: "Asia/Riyadh", dateStyle: "medium", timeStyle: "medium" }) : "—");
   const rows: [string, React.ReactNode][] = [
     ["Internal transaction ID", <span key="i" className="font-mono text-xs">{p.id}</span>],
@@ -39,7 +40,9 @@ export default async function PaymentDetail({ params }: { params: Promise<{ id: 
         subtitle={<span className="flex items-center gap-2"><StatusBadge status={p.status} /> {p.source !== "SEEDED_HISTORY" && <Badge tone="blue">PayPal {p.source === "PAYPAL_SANDBOX" ? "Sandbox" : ""}</Badge>}</span>}
         actions={
           <>
-            {p.paypalOrderId && ["TRAVEL_MANAGER", "ADMIN"].includes(user.role) && <ActionButton url={`/api/payments/${p.id}/sync`} variant="secondary" size="sm">Check status with PayPal</ActionButton>}
+            {p.source !== "SEEDED_HISTORY" && (p.paypalOrderId || p.status === "CREATED") && ["TRAVEL_MANAGER", "ADMIN"].includes(user.role) && (
+              <ActionButton url={`/api/payments/${p.id}/reconcile`} variant={needsAttention ? "accent" : "secondary"} size="sm">Reconcile with PayPal</ActionButton>
+            )}
             {user.role === "ADMIN" && p.status === "CAPTURED" && p.paypalCaptureId && (
               <ActionButton url={`/api/payments/${p.id}/refund`} body={{ reason: "Trip cancelled (demo refund)" }} variant="danger" size="sm" confirm="Issue a full PayPal Sandbox refund for this capture?">
                 Refund via PayPal
@@ -48,7 +51,26 @@ export default async function PaymentDetail({ params }: { params: Promise<{ id: 
           </>
         }
       />
+      {needsAttention && (
+        <div className="mb-4 rounded-md border border-danger/30 bg-danger-soft px-4 py-3 text-sm text-danger">
+          <div className="font-semibold">
+            {p.status === "NEEDS_REVIEW" ? "Manual review required — funds may have been captured" : p.status === "CAPTURE_UNKNOWN" ? "Capture outcome unknown — reconcile with PayPal" : "Capture in progress"}
+          </div>
+          <p className="mt-1">
+            New payments for {p.request.code} are blocked until this is resolved.{" "}
+            {p.status === "NEEDS_REVIEW"
+              ? "Compare the evidence below with the PayPal Sandbox business account before deciding on a refund or correction."
+              : "Reconciling asks PayPal for the order's real state; it never assumes failure because time has passed."}
+          </p>
+        </div>
+      )}
       {p.errorMessage && <div className="mb-4 rounded-md border border-danger/30 bg-danger-soft px-4 py-3 text-sm text-danger">{p.errorMessage}</div>}
+      {p.reviewEvidence && (
+        <Card className="mb-4">
+          <CardHeader title="PayPal evidence" subtitle="Identifiers and amounts recorded when the outcome could not be verified" />
+          <pre className="overflow-x-auto px-5 py-4 text-[11px] leading-relaxed">{JSON.stringify(JSON.parse(p.reviewEvidence), null, 2)}</pre>
+        </Card>
+      )}
       <div className="grid gap-4 lg:grid-cols-5">
         <Card className="lg:col-span-3">
           <CardHeader title="Payment record" />

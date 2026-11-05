@@ -37,6 +37,7 @@ interface Preview {
   paypalConfigured: boolean;
   sandbox: boolean;
   currencySupported: boolean;
+  blockedBy: { paymentId: string; status: string; message: string } | null;
 }
 
 const money = (minor: number, cur: string, dec = false) => {
@@ -101,7 +102,12 @@ export function CheckoutPanel({ requestId, canPay }: { requestId: string; canPay
         PayPal&apos;s REST APIs do not accept SAR, so the charge is made in {p.chargeCurrency} at {p.fx}. Each line is converted separately with integer
         rounding; the total equals the sum of lines. {p.sandbox && "This is a PayPal Sandbox payment — no real money moves."}
       </p>
-      {!p.paypalConfigured ? (
+      {p.blockedBy ? (
+        <div className="rounded-md border border-danger/30 bg-danger-soft px-4 py-3 text-sm text-danger">
+          {p.blockedBy.message}{" "}
+          <a href={`/payments/${p.blockedBy.paymentId}`} className="font-medium underline">Open the payment</a>
+        </div>
+      ) : !p.paypalConfigured ? (
         <div className="rounded-md border border-warn/30 bg-warn-soft px-4 py-3 text-sm text-warn">
           PayPal is not configured. Add <code>PAYPAL_CLIENT_ID</code> and <code>PAYPAL_CLIENT_SECRET</code> from a PayPal Developer <b>Sandbox</b> app to{" "}
           <code>.env</code> and restart. See README → PayPal Sandbox setup.

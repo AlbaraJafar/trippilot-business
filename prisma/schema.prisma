@@ -274,7 +274,10 @@ model Approval {
 }
 
 /// Source: PAYPAL_SANDBOX | PAYPAL_LIVE | SEEDED_HISTORY
-/// Status: CREATED | PAYER_ACTION_REQUIRED | CAPTURED | FAILED | CANCELLED | REFUNDED | PARTIALLY_REFUNDED
+/// Status: CREATED | PAYER_ACTION_REQUIRED | CAPTURING | CAPTURE_UNKNOWN | NEEDS_REVIEW | CAPTURE_PENDING
+///         | CAPTURED | FAILED | CANCELLED | REFUNDED
+/// CAPTURE_UNKNOWN: a capture call was sent but PayPal's answer could not be read (timeout, network, non-JSON).
+/// NEEDS_REVIEW:    PayPal returned a capture that failed verification — funds may have moved; a human must review.
 model Payment {
   id                String        @id @default(cuid())
   requestId         String
@@ -299,6 +302,14 @@ model Payment {
   consentBy         User?         @relation("PaymentConsent", fields: [consentById], references: [id])
   consentAt         DateTime?
   errorMessage      String?
+  /// Request-level payment slot. Equals requestId while this payment is open or its outcome may involve
+  /// money (every status except FAILED / CANCELLED). The UNIQUE index makes "at most one active payment
+  /// per travel request" a database guarantee, so concurrent checkouts cannot both create PayPal orders.
+  activeLock        String?       @unique
+  captureAttempts   Int           @default(0) // each attempt uses its own PayPal-Request-Id
+  captureStartedAt  DateTime? // when the current CAPTURING attempt began
+  reviewEvidence    String? // JSON: PayPal identifiers + amounts + verification problem (NEEDS_REVIEW / CAPTURE_UNKNOWN)
+  lastReconciledAt  DateTime?
   createdAt         DateTime      @default(now())
   capturedAt        DateTime?
   refundedAt        DateTime?

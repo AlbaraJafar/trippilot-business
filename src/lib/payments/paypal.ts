@@ -19,9 +19,48 @@ export class PayPalApiError extends Error {
     public issue: string | undefined,
     public debugId: string | undefined,
     message: string,
+    /** false when the failure happened before the API request itself was sent (e.g. obtaining a token). */
+    public requestSent = true,
   ) {
     super(message);
   }
+}
+
+/** The request may have reached PayPal, but no response arrived (timeout, connection reset, DNS…). */
+export class PayPalNetworkError extends Error {
+  readonly requestSent = true;
+  constructor(message: string, public timedOut: boolean) {
+    super(message);
+  }
+}
+
+/** PayPal answered, but the body could not be read as JSON (or was empty when a body was required). */
+export class PayPalUnreadableResponseError extends Error {
+  readonly requestSent = true;
+  constructor(
+    public status: number,
+    public debugId: string | undefined,
+    public bodySnippet: string,
+  ) {
+    super(`PayPal returned an unreadable response (HTTP ${status}).`);
+  }
+}
+
+/**
+ * True when we cannot know whether PayPal processed the request: the request was sent and either no
+ * response arrived, the response was unreadable, or PayPal reported a server-side (5xx) error.
+ * For a capture this means funds MAY have moved, so the caller must reconcile before doing anything else.
+ */
+export function isOutcomeUnknown(e: unknown): boolean {
+  if (e instanceof PayPalNetworkError || e instanceof PayPalUnreadableResponseError) return true;
+  if (e instanceof PayPalApiError) return e.requestSent && e.status >= 500;
+  if (e instanceof PayPalNotConfiguredError) return false;
+  return true; // unexpected error type: assume the worst
+}
+
+function timeoutMs() {
+  const n = Number(process.env.PAYPAL_HTTP_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : 30000;
 }
 
 /** Currencies accepted by the PayPal REST APIs (developer.paypal.com/reference/currency-codes). SAR is NOT among them. */
@@ -53,20 +92,34 @@ export async function getAccessToken(): Promise<string> {
   const cfg = paypalConfig();
   if (!cfg.configured) throw new PayPalNotConfiguredError();
   if (tokenCache && tokenCache.expiresAt > Date.now() + 60000) return tokenCache.token;
-  const res = await fetch(`${cfg.baseUrl}/v1/oauth2/token`, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${cfg.clientId}:${cfg.secret}`).toString("base64")}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: "grant_type=client_credentials",
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    throw new PayPalApiError(res.status, "AUTHENTICATION_FAILURE", res.headers.get("paypal-debug-id") ?? undefined, "PayPal authentication failed — check Sandbox client ID/secret.");
+  // Token errors never mean an Orders/Payments request was sent, so they are marked requestSent=false.
+  let res: Response;
+  try {
+    res = await fetch(`${cfg.baseUrl}/v1/oauth2/token`, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${cfg.clientId}:${cfg.secret}`).toString("base64")}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: "grant_type=client_credentials",
+      cache: "no-store",
+      signal: AbortSignal.timeout(timeoutMs()),
+    });
+  } catch {
+    throw new PayPalApiError(0, "TOKEN_UNAVAILABLE", undefined, "Could not reach PayPal to obtain an access token.", false);
   }
-  const json = (await res.json()) as { access_token: string; expires_in: number };
-  tokenCache = { token: json.access_token, expiresAt: Date.now() + json.expires_in * 1000 };
+  const debugId = res.headers.get("paypal-debug-id") ?? undefined;
+  if (!res.ok) {
+    throw new PayPalApiError(res.status, "AUTHENTICATION_FAILURE", debugId, "PayPal authentication failed — check Sandbox client ID/secret.", false);
+  }
+  let json: { access_token?: string; expires_in?: number };
+  try {
+    json = (await res.json()) as typeof json;
+  } catch {
+    throw new PayPalApiError(res.status, "TOKEN_UNREADABLE", debugId, "PayPal returned an unreadable token response.", false);
+  }
+  if (!json.access_token) throw new PayPalApiError(res.status, "TOKEN_UNREADABLE", debugId, "PayPal token response had no access token.", false);
+  tokenCache = { token: json.access_token, expiresAt: Date.now() + (json.expires_in ?? 0) * 1000 };
   return json.access_token;
 }
 
@@ -76,20 +129,39 @@ async function call<T>(path: string, init: { method: string; body?: unknown; req
   const headers: Record<string, string> = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
   if (init.requestId) headers["PayPal-Request-Id"] = init.requestId; // idempotency
   headers["Prefer"] = init.prefer ?? "return=representation";
-  const res = await fetch(`${cfg.baseUrl}${path}`, {
-    method: init.method,
-    headers,
-    body: init.body ? JSON.stringify(init.body) : undefined,
-    cache: "no-store",
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${cfg.baseUrl}${path}`, {
+      method: init.method,
+      headers,
+      body: init.body ? JSON.stringify(init.body) : undefined,
+      cache: "no-store",
+      signal: AbortSignal.timeout(timeoutMs()),
+    });
+  } catch (e) {
+    const timedOut = (e as Error)?.name === "TimeoutError" || (e as Error)?.name === "AbortError";
+    throw new PayPalNetworkError(timedOut ? "PayPal did not respond before the timeout." : "Network error while calling PayPal.", timedOut);
+  }
   const debugId = res.headers.get("paypal-debug-id") ?? undefined;
-  const text = await res.text();
-  const json = text ? JSON.parse(text) : {};
+  let text: string;
+  try {
+    text = await res.text();
+  } catch {
+    throw new PayPalNetworkError("Connection lost while reading PayPal's response.", false);
+  }
+  let json: Record<string, unknown> & { details?: { issue?: string; description?: string }[]; name?: string; message?: string };
+  try {
+    json = text ? JSON.parse(text) : {};
+  } catch {
+    throw new PayPalUnreadableResponseError(res.status, debugId, text.slice(0, 300));
+  }
   if (!res.ok) {
     const issue = json?.details?.[0]?.issue ?? json?.name;
     const desc = json?.details?.[0]?.description ?? json?.message ?? `PayPal API error ${res.status}`;
     throw new PayPalApiError(res.status, issue, debugId, desc);
   }
+  // Every call we make asks for a representation; an empty 2xx body means we do not know the result.
+  if (!text) throw new PayPalUnreadableResponseError(res.status, debugId, "");
   return json as T;
 }
 

@@ -69,7 +69,7 @@ const STATUS_TONE: Record<string, keyof typeof tones> = {
   DRAFT: "neutral", SEARCHED: "blue", PLANNED: "blue", PENDING_APPROVAL: "amber", CHANGES_REQUESTED: "amber",
   REJECTED: "red", APPROVED: "green", PAYMENT_PENDING: "amber", PAID: "green", BOOKED: "navy", REFUNDED: "neutral", CANCELLED: "neutral",
   PENDING: "amber", SUPERSEDED: "neutral",
-  CREATED: "neutral", PAYER_ACTION_REQUIRED: "amber", CAPTURING: "amber", CAPTURED: "green", CAPTURE_PENDING: "amber", FAILED: "red",
+  CREATED: "neutral", PAYER_ACTION_REQUIRED: "amber", CAPTURING: "amber", CAPTURED: "green", CAPTURE_PENDING: "amber", CAPTURE_UNKNOWN: "red", NEEDS_REVIEW: "red", FAILED: "red",
   NOT_STARTED: "neutral", SIMULATED_HELD: "amber", SIMULATED_CONFIRMED: "blue", ACTIVE: "blue", TRIGGERED: "green",
 };
 

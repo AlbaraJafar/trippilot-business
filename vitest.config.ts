@@ -8,5 +8,11 @@ export default defineConfig({
       "server-only": path.resolve(__dirname, "tests/stubs/server-only.ts"),
     },
   },
-  test: { include: ["tests/**/*.test.ts"], environment: "node" },
+  test: {
+    include: ["tests/**/*.test.ts"],
+    environment: "node",
+    // DB-backed tests use an isolated SQLite file rebuilt from the migrations before each run.
+    globalSetup: ["tests/setup-db.ts"],
+    env: { DATABASE_URL: "file:./test.db" },
+  },
 });

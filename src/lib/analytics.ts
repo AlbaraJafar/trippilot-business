@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "./db";
 import { AIRPORTS } from "./domain/types";
 
-const SPEND_STATUSES = ["CAPTURED", "CAPTURE_PENDING"];
+const SPEND_STATUSES = ["CAPTURED"]; // pending captures are not spend until PayPal completes them
 const ACTIVE = ["DRAFT", "SEARCHED", "PLANNED", "PENDING_APPROVAL", "CHANGES_REQUESTED", "APPROVED", "PAYMENT_PENDING"];
 
 /** All dashboard figures are computed from database rows — nothing is hard-coded. */

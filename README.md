@@ -103,7 +103,7 @@ Requires Node.js ≥ 20.
 cd trippilot-business
 cp .env.example .env        # then fill in PayPal Sandbox credentials
 npm install                 # runs prisma generate
-npm run setup               # create SQLite DB + seed Northstar Consulting
+npm run setup               # apply migrations to a new SQLite DB + seed Northstar Consulting
 npm run dev                 # http://localhost:3000
 ```
 
@@ -119,6 +119,7 @@ npm run dev                 # http://localhost:3000
 | `PAYPAL_BASE_URL` | yes | `https://api-m.sandbox.paypal.com` |
 | `PAYPAL_CHARGE_CURRENCY` | yes | `USD` (see currency note below) |
 | `PAYPAL_WEBHOOK_ID` | optional | Enables webhook signature verification |
+| `PAYPAL_HTTP_TIMEOUT_MS` | optional | Timeout for each PayPal HTTP call (default 30000). A timed-out capture becomes `CAPTURE_UNKNOWN`, never `FAILED` |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | optional | Claude extraction + explanations; deterministic fallback otherwise |
 | `FLIGHT_PROVIDER` | optional | `DEMO` (default) or `DUFFEL` |
 | `DUFFEL_ACCESS_TOKEN` | optional | Duffel test/live token for live search |
@@ -128,10 +129,12 @@ Secrets are read only in server modules marked `import "server-only"`. Nothing i
 ## 7. Database setup
 
 ```bash
-npm run db:push     # apply schema
+npm run db:migrate  # apply pending migrations (prisma migrate deploy)
 npm run db:seed     # deterministic demo data
-npm run db:reset    # drop + recreate + seed (also: Settings → Reset demo database, admin only)
+npm run db:reset    # drop + re-apply all migrations + seed (also: Settings → Reset demo database, admin only)
 ```
+
+The schema is managed with **Prisma Migrate** (`prisma/migrations/`). A `dev.db` created by an older build with `db push` has no migration history and lacks the payment-safety columns: run `npm run db:reset` once (it deletes local demo data and reseeds it).
 
 Models: Company, Department, User, Employee, TravelPolicy, TravelRequest, Traveler, FlightOption, Itinerary, ItineraryAssignment, Approval, Payment, PaymentEvent, Booking, PriceAlert, Notification, AuditLog. To move to PostgreSQL, change `provider = "postgresql"` and `DATABASE_URL`. Enumerations are stored as strings and validated with Zod, so no SQLite-specific features are used.
 
@@ -156,11 +159,21 @@ Authentication is a **demo account selector** in the header (a cookie, no passwo
 **How the integration works** (`src/lib/payments/paypal.ts`, `src/lib/services/payments.ts`):
 
 1. `GET /api/requests/:id/checkout` recomputes the amount from the stored itinerary lines.
-2. The payer ticks consent → `POST /api/requests/:id/checkout` re-validates: role, request status, an `APPROVED` approval whose amount equals the current amount, the consent amount equals the server amount, and the request is not already paid. Any open order for the same plan and amount is **reused**, so a double-click never creates a second charge.
-3. A `Payment` row is created first, then `POST /v2/checkout/orders` with `intent: CAPTURE`, a `PayPal-Request-Id` idempotency key, per-employee items, `reference_id` = payment id and return/cancel URLs.
+2. The payer ticks consent → `POST /api/requests/:id/checkout` re-validates: role, request status, an `APPROVED` approval whose amount equals the current amount, the consent amount equals the server amount, and the request is not already paid. Any open order for the same plan and amount is **reused**, and checkout is refused while an earlier payment is `CAPTURING`, `CAPTURE_UNKNOWN`, `NEEDS_REVIEW`, `CAPTURE_PENDING` or `CAPTURED`.
+3. A `Payment` row is created first. It takes the request's **payment slot**: `Payment.activeLock = requestId` under a UNIQUE index, inserted in one transaction with the request's move to `PAYMENT_PENDING`, so two simultaneous checkouts cannot both create PayPal orders. Then then `POST /v2/checkout/orders` with `intent: CAPTURE`, a `PayPal-Request-Id` idempotency key, per-employee items, `reference_id` = payment id and return/cancel URLs.
 4. The payer approves on PayPal and is redirected to `/checkout/return`, which calls `POST /api/payments/:id/capture`.
-5. The capture takes an optimistic DB lock (`CAPTURING`), calls `/capture` with its own idempotency key, handles `ORDER_ALREADY_CAPTURED`, and **verifies** capture status, currency, exact amount and reference id before marking `CAPTURED`.
-6. Every step writes a `PaymentEvent`. The request moves to `PAID`, simulated holds are created, and the dashboard and ledger update.
+5. The capture takes a compare-and-set DB lock (`CAPTURING`), calls `/capture` with a per-attempt idempotency key, handles `ORDER_ALREADY_CAPTURED`, and **verifies** order id, reference id, currency and exact amount.
+6. Only a verified `COMPLETED` capture marks the payment `CAPTURED`, moves the request to `PAID` and creates simulated holds. A `PENDING` capture stays `CAPTURE_PENDING` (not paid). Every step writes a `PaymentEvent`.
+
+**When the outcome is uncertain** (P0 safety):
+
+| Situation | Payment status | Request | New checkout |
+|---|---|---|---|
+| Capture timed out, network failed, or PayPal returned a non-JSON / 5xx response | `CAPTURE_UNKNOWN` (order id kept, error evidence stored) | stays `PAYMENT_PENDING` | blocked |
+| PayPal returned a capture that fails verification (amount, currency, reference, order id) | `NEEDS_REVIEW` (all PayPal ids + evidence stored, shown on the transaction page) | stays `PAYMENT_PENDING` | blocked |
+| Process died mid-capture | `CAPTURING` | stays `PAYMENT_PENDING` | blocked |
+
+**Reconcile with PayPal** (`POST /api/payments/:id/reconcile`, button on the transaction page) reads the order from PayPal and acts on its real state: `COMPLETED` → verify and record; `APPROVED` → capture now; not approved → back to awaiting the payer; `VOIDED`/declined → `FAILED` and the slot is released. It never treats elapsed time as failure. A `CAPTURING` payment younger than 60 s is left alone. If PayPal can't be reached, nothing changes. `NEEDS_REVIEW` is only cleared by a clean verification; otherwise a person decides.
 7. Admins can refund via `POST /v2/payments/captures/:id/refund`. Simulated bookings are cancelled with it.
 
 **Currency.** PayPal's REST currency list (developer.paypal.com/reference/currency-codes) **does not include SAR**. TripPilot keeps every business amount in SAR and charges PayPal in **USD at the fixed 3.75 SAR/USD peg**, showing both figures to the payer before consent. If `PAYPAL_CHARGE_CURRENCY` is set to a currency PayPal does not support, checkout is refused with an error. It is never sent silently.
@@ -213,7 +226,7 @@ node scripts/smoke.mjs   # end-to-end API smoke test against a running dev serve
 - PayPal REST does not support SAR, so charges are in USD at the peg. Only USD conversion is implemented.
 - PayPal Checkout cannot pay airlines directly. Supplier settlement is a separate integration.
 - Amadeus Self-Service no longer exists. Duffel booking is not enabled in this MVP.
-- Webhooks need a public URL and `PAYPAL_WEBHOOK_ID`. Without them, status comes from the verified return-URL capture plus the manual "Check status with PayPal" sync.
+- Webhooks need a public URL and `PAYPAL_WEBHOOK_ID`. Without them, status comes from the verified return-URL capture plus the manual "Reconcile with PayPal" action.
 
 ## 14. Known limitations
 

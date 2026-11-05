@@ -5,9 +5,9 @@ _Last updated: 2026-11-05_
 ## Commands
 
 ```bash
-npm install && npm run setup   # install, create DB, seed
+npm install && npm run setup   # install, apply migrations, seed
 npm run dev                    # http://localhost:3000
-npm test                       # 18 unit tests (vitest)
+npm test                       # 35 tests (vitest); P0 payment tests use an isolated prisma/test.db
 npm run typecheck              # tsc --noEmit
 npx eslint src prisma tests    # lint
 npm run build                  # production build
@@ -34,10 +34,21 @@ npm run db:reset               # back to the seeded demo state
 - [x] Price monitoring with simulated fare drift + notifications
 - [x] Audit log + notifications
 - [x] README, .env.example, MIT license
+- [x] **P0 payment safety (2026-11-05):**
+  - `CAPTURE_UNKNOWN` for timeouts, network failures, unreadable or 5xx capture responses.
+  - `NEEDS_REVIEW` with stored evidence when a capture fails verification.
+  - A stuck `CAPTURING` payment blocks checkout and is resolved only through PayPal.
+  - Request-level payment slot (`Payment.activeLock` UNIQUE, set in the same transaction as the request status change).
+  - Reconciliation endpoint and UI.
+  - Pending captures are no longer marked paid.
+  - Prisma Migrate baseline + `payment_p0_safety` migration.
 
 ## Verified
 
-- Unit tests: 18/18 pass (optimizer constraints and capacity, plans, approval routing, money/FX, NL parser, explanation grounding, PayPal request shape, error mapping, capture verification).
+- Tests: 35/35 pass.
+  - Unit tests: optimizer, money/FX, NL parser, explanation grounding, PayPal client.
+  - 17 DB-backed P0 payment tests against mocked PayPal HTTP responses: timeout, non-JSON, verification mismatch, interrupted capture, concurrent checkout, and reconciliation of completed, pending, approved, voided, declined and unapproved orders. **These are not Sandbox transactions.**
+  - Mutation check: removing the payment-slot lock makes the concurrency test fail; the UNIQUE index alone still prevents the duplicate order.
 - API smoke test: 15/15 pass (parse → create → RBAC → optimize → route to dept head → payment blocked pre-approval → TM cannot approve level 2 → dept head approves → double-approve 409 → preview → tampered amount 409 → no fake success without PayPal).
 - `tsc`, ESLint and `next build` are clean.
 - Browser walkthrough: dashboard, agent flow with auto-optimize, plan selection, approval switch, checkout panel.
@@ -49,7 +60,22 @@ npm run db:reset               # back to the seeded demo state
 - Claude path needs `ANTHROPIC_API_KEY` (deterministic fallback verified).
 - Duffel adapter needs `DUFFEL_ACCESS_TOKEN` (not exercised).
 
+## Remaining payment risks (after P0)
+
+- **P1:**
+  - A refunded or reversed webhook doesn't update the request or bookings.
+  - No webhook event de-duplication.
+  - No automatic capture when the payer approves but never returns. Recovery is possible today with "Reconcile with PayPal".
+  - Expired open orders are reused until reconciled.
+  - No admin workflow to close `NEEDS_REVIEW`.
+- **P2:**
+  - Refunds are marked `REFUNDED` even when PayPal reports `PENDING`.
+  - Webhook verification re-serialises the JSON.
+- **Hosting:** SQLite and the demo account switch are local-only.
+
 ## Known issues
+
+- A `dev.db` created before migrations were introduced (via `db push`) must be rebuilt once with `npm run db:reset`.
 
 - Running `next build` while `next dev` is running can corrupt dev manifests. Restart dev afterwards.
 - Phase 7 items (hosted demo, public repo, video, screenshots) are not done.

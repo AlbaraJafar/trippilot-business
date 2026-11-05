@@ -30,7 +30,7 @@ export default async function PaymentsPage({ searchParams }: { searchParams: SP 
     prisma.employee.findMany({ where: { companyId: user.companyId }, orderBy: { fullName: "asc" } }),
     prisma.approval.findMany({ where: { status: "PENDING", request: { companyId: user.companyId } }, include: { request: true } }),
   ]);
-  const captured = payments.filter((p) => ["CAPTURED", "CAPTURE_PENDING"].includes(p.status));
+  const captured = payments.filter((p) => p.status === "CAPTURED");
   const sum = (xs: typeof payments) => xs.reduce((a, p) => a + p.amountMinor, 0);
   const byDept = new Map<string, number>();
   const byEmp = new Map<string, number>();
@@ -56,7 +56,7 @@ export default async function PaymentsPage({ searchParams }: { searchParams: SP 
           <div><Label>To</Label><Input type="date" name="to" defaultValue={sp.to} /></div>
           <div><Label>Department</Label><Select name="dept" defaultValue={sp.dept ?? ""}><option value="">All</option>{depts.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select></div>
           <div><Label>Employee</Label><Select name="employee" defaultValue={sp.employee ?? ""}><option value="">All</option>{employees.map((e) => <option key={e.id} value={e.id}>{e.fullName}</option>)}</Select></div>
-          <div><Label>Status</Label><Select name="status" defaultValue={sp.status ?? ""}><option value="">All</option>{["CAPTURED", "PAYER_ACTION_REQUIRED", "CAPTURE_PENDING", "FAILED", "CANCELLED", "REFUNDED"].map((s) => <option key={s} value={s}>{s.toLowerCase().replace(/_/g, " ")}</option>)}</Select></div>
+          <div><Label>Status</Label><Select name="status" defaultValue={sp.status ?? ""}><option value="">All</option>{["CAPTURED", "PAYER_ACTION_REQUIRED", "CAPTURING", "CAPTURE_PENDING", "CAPTURE_UNKNOWN", "NEEDS_REVIEW", "FAILED", "CANCELLED", "REFUNDED"].map((s) => <option key={s} value={s}>{s.toLowerCase().replace(/_/g, " ")}</option>)}</Select></div>
           <div><Label>Charge currency</Label><Select name="currency" defaultValue={sp.currency ?? ""}><option value="">All</option><option value="USD">USD</option><option value="SAR">SAR</option></Select></div>
           <div className="flex items-end gap-2">
             <Button type="submit" size="sm">Filter</Button>
