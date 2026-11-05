@@ -1,103 +1,156 @@
-import Image from "next/image";
+import Link from "next/link";
+import { ArrowRight, Bot, Plus } from "lucide-react";
+import { getCurrentUser } from "@/lib/auth";
+import { prisma } from "@/lib/db";
+import { getAnalytics } from "@/lib/analytics";
+import { formatMoney } from "@/lib/money";
+import { Card, CardHeader, Empty, PageHeader, Stat, StatusBadge } from "@/components/ui";
+import { BudgetBars, ComplianceDonut, HorizontalBars, MonthlySpendChart } from "@/components/charts";
 
-export default function Home() {
+const ACTION_LABEL: Record<string, string> = {
+  REQUEST_CREATED: "New travel request",
+  FLIGHTS_SEARCHED: "Flight options retrieved",
+  AI_PLANS_GENERATED: "AI itinerary recommendation",
+  AI_INSTRUCTION_PARSED: "AI parsed instruction",
+  PLAN_SUBMITTED: "Plan submitted for approval",
+  APPROVAL_APPROVED: "Approval granted",
+  APPROVAL_REJECTED: "Approval rejected",
+  APPROVAL_CHANGES_REQUESTED: "Changes requested",
+  PAYPAL_ORDER_CREATED: "PayPal order created",
+  PAYMENT_CAPTURED: "PayPal payment captured",
+  PAYMENT_REFUNDED: "Payment refunded",
+  SIMULATED_BOOKINGS_CONFIRMED: "Simulated booking confirmed",
+  POLICY_UPDATED: "Travel policy updated",
+  EMPLOYEE_CREATED: "Employee added",
+  EMPLOYEES_IMPORTED: "Employees imported",
+  PRICE_ALERT_CREATED: "Price alert created",
+};
+
+export default async function Dashboard() {
+  const user = await getCurrentUser();
+  if (!user) return <Empty>No data. Run <code>npm run setup</code> to seed the demo database.</Empty>;
+  const [a, activity, focus] = await Promise.all([
+    getAnalytics(user.companyId),
+    prisma.auditLog.findMany({ where: { companyId: user.companyId, action: { in: Object.keys(ACTION_LABEL) } }, orderBy: { createdAt: "desc" }, take: 8 }),
+    prisma.travelRequest.findFirst({
+      where: { companyId: user.companyId, status: { notIn: ["BOOKED", "REFUNDED", "CANCELLED"] } },
+      orderBy: { updatedAt: "desc" },
+      include: { itineraries: true, _count: { select: { travelers: true } } },
+    }),
+  ]);
+  const plan = focus?.itineraries.find((i) => i.id === focus.selectedItineraryId) ?? focus?.itineraries.find((i) => i.label.includes("Recommended"));
+  const exceptions = plan ? (JSON.parse(plan.facts).exceptions ?? []) as { name: string; overMinor: number }[] : [];
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <div className="fade-up">
+      <PageHeader
+        title={`Good day, ${user.name.split(" ")[0]}`}
+        subtitle="Corporate travel spend, approvals and PayPal payments at a glance."
+        actions={
+          <>
+            <Link href="/agent" className="inline-flex h-9 items-center gap-2 rounded-md border border-line bg-white px-4 text-sm font-medium hover:bg-canvas">
+              <Bot className="h-4 w-4" /> Ask the agent
+            </Link>
+            <Link href="/requests/new" className="inline-flex h-9 items-center gap-2 rounded-md bg-navy-900 px-4 text-sm font-medium text-white hover:bg-navy-800">
+              <Plus className="h-4 w-4" /> Create travel plan
+            </Link>
+          </>
+        }
+      />
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+        <Stat label="Total travel spend" value={formatMoney(a.kpis.totalSpendMinor)} hint={a.seededShareMinor ? `incl. ${formatMoney(a.seededShareMinor)} seeded history` : undefined} />
+        <Stat label="Trips paid" value={a.kpis.trips} />
+        <Stat label="Active requests" value={a.kpis.activeRequests} />
+        <Stat label="Pending approvals" value={a.kpis.pendingApprovals} />
+        <Stat label="Estimated savings" value={formatMoney(a.kpis.savingsMinor)} hint="vs. median feasible fare" />
+        <Stat
+          label="PayPal success rate"
+          value={a.kpis.paypalSuccessRate === null ? "—" : `${a.kpis.paypalSuccessRate}%`}
+          hint={a.kpis.paypalCount ? `${a.kpis.paypalCaptured} of ${a.kpis.paypalCount} sandbox orders` : "No PayPal orders yet"}
+        />
+      </div>
+
+      {focus && (
+        <Card className="mt-4 overflow-hidden">
+          <div className="flex flex-wrap items-center gap-x-8 gap-y-3 bg-navy-950 px-5 py-4 text-white">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-white/50">
+                {focus.code} · current plan
+              </div>
+              <div className="mt-0.5 truncate text-sm font-semibold">{focus.title}</div>
+              <div className="text-xs text-white/60">{focus._count.travelers} travelers · {focus.origin} → {focus.destination}</div>
+            </div>
+            <div>
+              <div className="text-[11px] uppercase tracking-wider text-white/50">Plan total</div>
+              <div className="tabular text-lg font-semibold">{plan ? formatMoney(plan.totalMinor) : "Not optimized yet"}</div>
+            </div>
+            {plan && (
+              <div>
+                <div className="text-[11px] uppercase tracking-wider text-white/50">Savings vs baseline</div>
+                <div className="tabular text-lg font-semibold text-emerald-300">{formatMoney(Math.max(0, plan.baselineMinor - plan.totalMinor))}</div>
+              </div>
+            )}
+            {plan && (
+              <div>
+                <div className="text-[11px] uppercase tracking-wider text-white/50">Policy exceptions</div>
+                <div className="text-lg font-semibold">{exceptions.length}</div>
+              </div>
+            )}
+            <div className="ml-auto flex items-center gap-3">
+              <StatusBadge status={focus.status} />
+              <Link href={`/requests/${focus.id}`} className="inline-flex items-center gap-1 text-sm font-medium text-white hover:underline">
+                Open workspace <ArrowRight className="h-4 w-4" />
+              </Link>
+            </div>
+          </div>
+          {exceptions.length > 0 && (
+            <div className="px-5 py-3 text-xs text-muted">
+              {exceptions.map((e) => `${e.name}: ${e.overMinor ? `+${formatMoney(e.overMinor)} over limit` : "policy note"}`).join(" · ")}
+            </div>
+          )}
+        </Card>
+      )}
+
+      <div className="mt-4 grid gap-4 lg:grid-cols-3">
+        <Card className="lg:col-span-2">
+          <CardHeader title="Monthly travel spending" subtitle="Captured payments, last 6 months (SAR)" />
+          <div className="p-4"><MonthlySpendChart data={a.monthly} /></div>
+        </Card>
+        <Card>
+          <CardHeader title="Policy compliance" subtitle="Selected plans by status" />
+          <div className="p-5"><ComplianceDonut data={a.compliance} /></div>
+        </Card>
+        <Card>
+          <CardHeader title="Spending by department" />
+          <div className="p-4"><HorizontalBars data={a.byDept} /></div>
+        </Card>
+        <Card>
+          <CardHeader title="Spending by destination" />
+          <div className="p-4"><HorizontalBars data={a.byDestination} color="#0f9d6b" /></div>
+        </Card>
+        <Card>
+          <CardHeader title="Budget utilisation" subtitle="Annual department travel budgets" />
+          <div className="p-5"><BudgetBars data={a.byDept} /></div>
+        </Card>
+      </div>
+
+      <Card className="mt-4">
+        <CardHeader title="Recent activity" action={<Link href="/notifications" className="text-xs font-medium text-muted hover:text-ink">All notifications</Link>} />
+        {activity.length === 0 ? (
+          <Empty>No activity yet.</Empty>
+        ) : (
+          <ul className="divide-y divide-line">
+            {activity.map((l) => (
+              <li key={l.id} className="flex items-center gap-4 px-5 py-3 text-sm">
+                <span className="w-44 shrink-0 font-medium">{ACTION_LABEL[l.action] ?? l.action}</span>
+                <span className="min-w-0 flex-1 truncate text-muted">{l.actorName}</span>
+                <span className="tabular shrink-0 text-xs text-muted">{l.createdAt.toLocaleString("en-GB", { timeZone: "Asia/Riyadh", dateStyle: "medium", timeStyle: "short" })}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
     </div>
   );
 }

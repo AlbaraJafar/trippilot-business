@@ -1,0 +1,390 @@
+// TripPilot Business — Prisma schema
+// Money is ALWAYS stored as integer minor units (halalas for SAR, cents for USD).
+// SQLite is used locally; the schema avoids SQLite-only features so it can move to PostgreSQL.
+// Enumerations are stored as strings (validated by Zod in src/lib/domain/types.ts).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Company {
+  id            String         @id @default(cuid())
+  name          String
+  currency      String         @default("SAR")
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  departments   Department[]
+  employees     Employee[]
+  users         User[]
+  policy        TravelPolicy?
+  requests      TravelRequest[]
+  notifications Notification[]
+  auditLogs     AuditLog[]
+}
+
+model Department {
+  id          String          @id @default(cuid())
+  companyId   String
+  company     Company         @relation(fields: [companyId], references: [id])
+  code        String
+  name        String
+  budgetMinor Int // annual travel budget, SAR halalas
+  employees   Employee[]
+  requests    TravelRequest[]
+  createdAt   DateTime        @default(now())
+
+  @@unique([companyId, code])
+}
+
+/// Demo login identity. Role: ADMIN | TRAVEL_MANAGER | DEPARTMENT_HEAD | EMPLOYEE
+model User {
+  id         String    @id @default(cuid())
+  companyId  String
+  company    Company   @relation(fields: [companyId], references: [id])
+  name       String
+  email      String    @unique
+  role       String
+  title      String
+  employeeId String?   @unique
+  employee   Employee? @relation(fields: [employeeId], references: [id])
+  createdAt  DateTime  @default(now())
+
+  requestsCreated TravelRequest[] @relation("RequestCreator")
+  approvals       Approval[]      @relation("ApprovalDecider")
+  consents        Payment[]       @relation("PaymentConsent")
+  notifications   Notification[]
+  priceAlerts     PriceAlert[]
+}
+
+model Employee {
+  id                  String     @id @default(cuid())
+  companyId           String
+  company             Company    @relation(fields: [companyId], references: [id])
+  employeeCode        String
+  fullName            String
+  email               String
+  departmentId        String
+  department          Department @relation(fields: [departmentId], references: [id])
+  jobTitle            String
+  grade               String     @default("STANDARD") // STANDARD | SENIOR | EXECUTIVE
+  managerId           String?
+  manager             Employee?  @relation("Manager", fields: [managerId], references: [id])
+  reports             Employee[] @relation("Manager")
+  budgetLimitMinor    Int // personal per-trip cap (SAR halalas)
+  preferredAirline    String? // IATA code
+  preferredDeparture  String     @default("ANY") // EARLY | MORNING | AFTERNOON | EVENING | ANY
+  earliestDeparture   String? // personal hard constraint HH:MM (e.g. medical / family)
+  baggage             String     @default("CABIN") // CABIN | CHECKED
+  seatPreference      String     @default("ANY") // AISLE | WINDOW | ANY
+  homeAirport         String     @default("RUH")
+  specialRequirements String?
+  active              Boolean    @default(true)
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+
+  user        User?
+  travelers   Traveler[]
+  assignments ItineraryAssignment[]
+  bookings    Booking[]
+
+  @@unique([companyId, employeeCode])
+  @@unique([companyId, email])
+  @@index([departmentId])
+}
+
+model TravelPolicy {
+  id                       String   @id @default(cuid())
+  companyId                String   @unique
+  company                  Company  @relation(fields: [companyId], references: [id])
+  standardMaxMinor         Int // per round trip
+  seniorMaxMinor           Int
+  executiveMaxMinor        Int
+  allowedCabins            String   @default("ECONOMY") // CSV
+  preferredAirlines        String   @default("") // CSV IATA
+  directPreferred          Boolean  @default(true)
+  minAdvanceDays           Int      @default(3)
+  maxTripBudgetMinor       Int // per request ceiling
+  // Payment approval thresholds (per employee ticket amount)
+  managerApprovalMaxMinor  Int // <= : travel manager may approve
+  deptHeadApprovalMaxMinor Int // <= : department head; above -> executive
+  groupDeptHeadMinor       Int // total purchase above this needs department head
+  autoExecuteMaxMinor      Int      @default(0) // 0 = never auto-execute payments
+  scoringWeights           String // JSON {price, departure, return, duration, airline, baggage}
+  updatedAt                DateTime @updatedAt
+}
+
+/// Status: DRAFT | SEARCHED | PLANNED | PENDING_APPROVAL | CHANGES_REQUESTED | REJECTED | APPROVED | PAYMENT_PENDING | PAID | BOOKED | CANCELLED
+model TravelRequest {
+  id                    String   @id @default(cuid())
+  code                  String   @unique
+  companyId             String
+  company               Company  @relation(fields: [companyId], references: [id])
+  departmentId          String
+  department            Department @relation(fields: [departmentId], references: [id])
+  createdById           String
+  createdBy             User     @relation("RequestCreator", fields: [createdById], references: [id])
+  title                 String
+  purpose               String
+  mode                  String // INDIVIDUAL | GROUP
+  origin                String
+  destination           String
+  outboundDates         String // JSON string[] YYYY-MM-DD
+  returnDates           String // JSON string[] (empty = one-way)
+  arriveBy              String? // HH:MM outbound arrival deadline
+  earliestDeparture     String? // HH:MM outbound
+  returnDepartAfter     String? // HH:MM
+  latestReturn          String? // HH:MM latest arrival back home
+  maxPerEmployeeMinor   Int
+  totalBudgetMinor      Int
+  preferredAirlines     String   @default("")
+  baggage               String   @default("ANY") // ANY | CABIN | CHECKED
+  directOnly            Boolean  @default(false)
+  flexibleDates         Boolean  @default(false)
+  objective             String   @default("BALANCED")
+  nlInstruction         String?
+  parsedBy              String? // CLAUDE | DETERMINISTIC | FORM
+  status                String   @default("DRAFT")
+  selectedItineraryId   String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  travelers     Traveler[]
+  flightOptions FlightOption[]
+  itineraries   Itinerary[]
+  approvals     Approval[]
+  payments      Payment[]
+  bookings      Booking[]
+  priceAlerts   PriceAlert[]
+
+  @@index([companyId, status])
+}
+
+model Traveler {
+  id          String        @id @default(cuid())
+  requestId   String
+  request     TravelRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  employeeId  String
+  employee    Employee      @relation(fields: [employeeId], references: [id])
+
+  @@unique([requestId, employeeId])
+}
+
+model FlightOption {
+  id             String        @id @default(cuid())
+  requestId      String
+  request        TravelRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  provider       String // DEMO | DUFFEL ...
+  isDemo         Boolean
+  providerRef    String
+  direction      String // OUTBOUND | RETURN
+  airline        String // IATA
+  airlineName    String
+  flightNumber   String
+  origin         String
+  destination    String
+  date           String // YYYY-MM-DD (local, Asia/Riyadh)
+  departTime     String // HH:MM local
+  arriveTime     String // HH:MM local
+  arriveDayOffset Int    @default(0)
+  durationMin    Int
+  stops          Int     @default(0)
+  cabin          String // ECONOMY | PREMIUM | BUSINESS
+  baggage        String // CABIN | CHECKED
+  baggageKg      Int
+  refundable     Boolean @default(false)
+  seatsLeft      Int
+  priceMinor     Int // per passenger, SAR halalas
+  currency       String  @default("SAR")
+  fetchedAt      DateTime @default(now())
+
+  outboundAssignments ItineraryAssignment[] @relation("OutboundFlight")
+  returnAssignments   ItineraryAssignment[] @relation("ReturnFlight")
+  priceAlerts         PriceAlert[]
+
+  @@index([requestId, direction])
+}
+
+/// A complete group plan produced by the optimizer.
+model Itinerary {
+  id             String        @id @default(cuid())
+  requestId      String
+  request        TravelRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  strategy       String // CHEAPEST | BALANCED | CONVENIENT
+  label          String
+  totalMinor     Int
+  baselineMinor  Int
+  score          Int // 0..1000
+  policyStatus   String // COMPLIANT | REQUIRES_APPROVAL | POLICY_VIOLATION
+  feasible       Boolean
+  explanation    String
+  explainedBy    String // CLAUDE | DETERMINISTIC
+  facts          String // JSON summary used to build the explanation
+  createdAt      DateTime      @default(now())
+
+  assignments ItineraryAssignment[]
+  approvals   Approval[]
+  payments    Payment[]
+}
+
+model ItineraryAssignment {
+  id               String       @id @default(cuid())
+  itineraryId      String
+  itinerary        Itinerary    @relation(fields: [itineraryId], references: [id], onDelete: Cascade)
+  employeeId       String
+  employee         Employee     @relation(fields: [employeeId], references: [id])
+  outboundFlightId String?
+  outboundFlight   FlightOption? @relation("OutboundFlight", fields: [outboundFlightId], references: [id])
+  returnFlightId   String?
+  returnFlight     FlightOption? @relation("ReturnFlight", fields: [returnFlightId], references: [id])
+  priceMinor       Int
+  score            Int
+  policyStatus     String
+  findings         String // JSON PolicyFinding[]
+  unsatisfiedReason String?
+
+  bookings Booking[]
+
+  @@unique([itineraryId, employeeId])
+}
+
+/// Status: PENDING | APPROVED | REJECTED | CHANGES_REQUESTED | SUPERSEDED
+model Approval {
+  id           String        @id @default(cuid())
+  requestId    String
+  request      TravelRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  itineraryId  String
+  itinerary    Itinerary     @relation(fields: [itineraryId], references: [id], onDelete: Cascade)
+  level        Int // 1 travel manager, 2 department head, 3 executive
+  requiredRole String
+  reasons      String // JSON string[]
+  amountMinor  Int
+  status       String        @default("PENDING")
+  decidedById  String?
+  decidedBy    User?         @relation("ApprovalDecider", fields: [decidedById], references: [id])
+  decisionNote String?
+  decidedAt    DateTime?
+  createdAt    DateTime      @default(now())
+
+  @@index([status, requiredRole])
+}
+
+/// Source: PAYPAL_SANDBOX | PAYPAL_LIVE | SEEDED_HISTORY
+/// Status: CREATED | PAYER_ACTION_REQUIRED | CAPTURED | FAILED | CANCELLED | REFUNDED | PARTIALLY_REFUNDED
+model Payment {
+  id                String        @id @default(cuid())
+  requestId         String
+  request           TravelRequest @relation(fields: [requestId], references: [id])
+  itineraryId       String?
+  itinerary         Itinerary?    @relation(fields: [itineraryId], references: [id])
+  source            String
+  amountMinor       Int // SAR halalas (business amount)
+  currency          String        @default("SAR")
+  chargeAmountMinor Int // amount sent to PayPal in chargeCurrency minor units
+  chargeCurrency    String
+  fxRate            String // e.g. "3.75 SAR/USD (peg)"
+  status            String
+  paypalOrderId     String?       @unique
+  paypalCaptureId   String?       @unique
+  paypalRefundId    String?
+  approveUrl        String?
+  payerId           String?
+  payerEmail        String?
+  idempotencyKey    String        @unique
+  consentById       String?
+  consentBy         User?         @relation("PaymentConsent", fields: [consentById], references: [id])
+  consentAt         DateTime?
+  errorMessage      String?
+  createdAt         DateTime      @default(now())
+  capturedAt        DateTime?
+  refundedAt        DateTime?
+  updatedAt         DateTime      @updatedAt
+
+  events PaymentEvent[]
+
+  @@index([status])
+  @@index([requestId])
+}
+
+model PaymentEvent {
+  id        String   @id @default(cuid())
+  paymentId String
+  payment   Payment  @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  type      String
+  message   String
+  payload   String? // JSON (sanitised)
+  createdAt DateTime @default(now())
+
+  @@index([paymentId])
+}
+
+/// Booking lifecycle is independent from payment lifecycle.
+/// Status: NOT_STARTED | SIMULATED_HELD | SIMULATED_CONFIRMED | CANCELLED | FAILED
+model Booking {
+  id           String               @id @default(cuid())
+  requestId    String
+  request      TravelRequest        @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  assignmentId String?
+  assignment   ItineraryAssignment? @relation(fields: [assignmentId], references: [id])
+  employeeId   String
+  employee     Employee             @relation(fields: [employeeId], references: [id])
+  provider     String
+  isSimulated  Boolean
+  reference    String? // simulated refs are prefixed "SIM-" and are NOT airline PNRs
+  status       String
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+}
+
+model PriceAlert {
+  id             String        @id @default(cuid())
+  requestId      String
+  request        TravelRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  flightOptionId String
+  flightOption   FlightOption  @relation(fields: [flightOptionId], references: [id], onDelete: Cascade)
+  createdById    String
+  createdBy      User          @relation(fields: [createdById], references: [id])
+  targetMinor    Int
+  currentMinor   Int
+  status         String        @default("ACTIVE") // ACTIVE | TRIGGERED
+  history        String        @default("[]") // JSON [{at, priceMinor}]
+  isSimulated    Boolean
+  lastCheckedAt  DateTime      @default(now())
+  createdAt      DateTime      @default(now())
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id])
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  kind      String
+  title     String
+  body      String
+  link      String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([companyId, createdAt])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id])
+  actorId   String?
+  actorName String
+  action    String
+  entity    String
+  entityId  String
+  details   String? // JSON
+  createdAt DateTime @default(now())
+
+  @@index([companyId, createdAt])
+  @@index([entity, entityId])
+}
